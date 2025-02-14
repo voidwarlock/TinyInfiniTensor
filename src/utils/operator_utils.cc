@@ -4,13 +4,30 @@
 namespace infini {
 
 Shape infer_broadcast(const Shape &A, const Shape &B) {
+    size_t rankA = A.size();
+    size_t rankB = B.size();
 
-    // =================================== 作业 ===================================
-    // TODO：对 A 和 B 进行双向广播，返回广播后的形状。
-    // REF: https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
-    // =================================== 作业 ===================================
-    
-    return {};
+    size_t maxRank = std::max(rankA, rankB);
+
+    Shape reversedA(A.rbegin(), A.rend());
+    Shape reversedB(B.rbegin(), B.rend());
+
+    Shape resultShape(maxRank, 0);
+
+    for (size_t i = 0; i < maxRank; ++i) {
+        int64_t dimA = i < rankA ? reversedA[i] : 1;
+        int64_t dimB = i < rankB ? reversedB[i] : 1;
+
+        if (dimA != dimB && dimA != 1 && dimB != 1) {
+            return {}; 
+        }
+
+        resultShape[i] = std::max(dimA, dimB);
+    }
+
+
+    std::reverse(resultShape.begin(), resultShape.end());
+    return resultShape;
 }
 
 int get_real_axis(const int &axis, const int &rank) {

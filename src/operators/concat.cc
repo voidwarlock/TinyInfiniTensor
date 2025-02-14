@@ -12,12 +12,14 @@ ConcatObj::ConcatObj(GraphObj *graph, TensorVec inputs, Tensor output, int _dim)
 optional<vector<Shape>> ConcatObj::inferShape(const TensorVec &inputs) {
     Shape dims = inputs[0]->getDims();
     auto rank = inputs[0]->getRank();
-
-    // =================================== 作业 ===================================
-    // TODO：修改 dims，返回正确的 concat 后的 shape
-    // REF: https://onnx.ai/onnx/operators/onnx__Concat.html#concat-13
-    // =================================== 作业 ===================================
-
+    for (size_t i = 1; i < inputs.size(); ++i) {
+        const auto &inputShape = inputs[i]->getDims();
+        for (size_t j = 0; j < rank; ++j) {
+            if (j == static_cast<size_t>(dim)) {
+                dims[j] += inputShape[j];
+            } 
+        }
+    }
     return {{dims}};
 }
 

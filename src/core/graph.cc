@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <numeric>
 #include <queue>
+#include "operators/matmul.h"
+#include "operators/transpose.h"
 
 namespace infini
 {
@@ -98,15 +100,204 @@ namespace infini
         return this->sorted = true;
     }
 
-    void GraphObj::optimize()
-    {
-        // =================================== 作业 ===================================
-        // TODO: 设计一个算法来实现指定的图优化规则
-        // 图优化规则如下：
-        // 1. 去除冗余的算子（例如，两个相邻的算子都是 transpose 算子，且做的是相反的操作，可以将其全部删除）
-        // 2. 合并算子（例如，矩阵乘算子中含有属性transA、transB，如果其输入存在transpose，且对最后两个维度做交换，就可以将transpose融入到矩阵乘算子的属性中去）
-        // =================================== 作业 ===================================
+    void GraphObj::optimize() {
+        auto it = ops.begin();
+        while (it != ops.end())
+        {
+            if ((*it)->getOpType() == OpType(OpType::Transpose))
+            {
+                TransposeObj *transposeOp = dynamic_cast<TransposeObj*>(it->get());
+                const std::vector<int> &permutation = transposeOp->getPermute();
+                size_t rank = permutation.size();
+
+                auto nextIt = std::next(it);
+                if (nextIt != ops.end() && (*nextIt)->getOpType() == OpType(OpType::Transpose))
+                {
+                    TransposeObj *nextTransposeOp = dynamic_cast<TransposeObj*>(nextIt->get());
+                    const std::vector<int> &nextPermutation = nextTransposeOp->getPermute();
+                    
+                    if (rank == nextPermutation.size() &&
+                        permutation[rank - 1] == static_cast<int>(rank - 2) &&
+                        permutation[rank - 2] == static_cast<int>(rank - 1) &&
+                        nextPermutation[rank - 1] == static_cast<int>(rank - 2) &&
+                        nextPermutation[rank - 2] == static_cast<int>(rank - 1))
+                    {
+                        for (auto &input : transposeOp->getInputs())
+                        {
+                            if (input)
+                            {
+                                input->removeTarget(*it);
+                            }
+                        }
+                        for (auto &input : nextTransposeOp->getInputs())
+                        {
+                            if (input)
+                            {
+                                input->removeTarget(*nextIt);
+                            }
+                        }
+                        for (auto &output : nextTransposeOp->getOutputs())
+                        {
+                            if (output)
+                            {
+                                output->setSource(nullptr);
+                                for (auto &target : output->getTargets())
+                                {
+                                    target->removePredecessors(*nextIt);
+                                    target->replaceInput(output, transposeOp->getInputs()[0]);
+                                }
+                            }
+                        }
+                        for (auto &output : transposeOp->getOutputs())
+                        {
+                            if (output)
+                            {
+                                output->setSource(nullptr);
+                                for (auto &target : output->getTargets())
+                                {
+                                    target->removePredecessors(*it);
+                                    target->replaceInput(output, transposeOp->getInputs()[0]);
+                                }
+                            }
+                        }
+
+
+                        // 移除两个 Transpose 算子的前驱和后继操作
+                        for (auto &predecessor : transposeOp->getPredecessors())
+                        {
+                            predecessor->removeSuccessors(*it);
+                        }
+                        for (auto &predecessor : nextTransposeOp->getPredecessors())
+                        {
+                            predecessor->removeSuccessors(*nextIt);
+                        }
+
+                        for (auto &successor : transposeOp->getSuccessors())
+                        {
+                            successor->removePredecessors(*it);
+                        }
+                        for (auto &successor : nextTransposeOp->getSuccessors())
+                        {
+                            successor->removePredecessors(*nextIt);
+                        }
+                        // 从 ops 列表中移除这两个 Transpose 算子
+                        removeTensor(nextTransposeOp->getOutputs()[0]);
+                        removeTensor(transposeOp->getOutputs()[0]);
+                        removeOperator(*nextIt);
+                        removeOperator(*it);
+                        continue;
+                    }
+                }
+            }
+            if ((*it)->getOpType() == OpType(OpType::MatMul)) {
+                MatmulObj *matmulOp = dynamic_cast<MatmulObj*>(it->get());
+
+                // 获取 MatMul 的输入张量
+                Tensor inputA = (*it)->getInputs()[0];
+                Tensor inputB = (*it)->getInputs()[1];
+    
+                // 检查 inputA 是否来自 Transpose
+                Operator sourceA = inputA->getSource();
+                if (sourceA && sourceA->getOpType() == OpType(OpType::Transpose) && matmulOp->getTransA()==false) {
+                    TransposeObj *transposeOp = dynamic_cast<TransposeObj*>(sourceA.get());
+                    const std::vector<int> &permutationA = transposeOp->getPermute();
+                    size_t rank = permutationA.size();
+                    if (rank >= 2 && permutationA[rank - 1] == static_cast<int>(rank - 2) && permutationA[rank - 2] == static_cast<int>(rank - 1))
+                    {
+                        matmulOp->setTransA(true);
+                        // 移除 Transpose 算子的输入张量的连接
+                        for (auto &input : transposeOp->getInputs())
+                        {
+                            if (input)
+                            {
+                                input->removeTarget(sourceA);
+                            }
+                        }
+
+                        // 移除 Transpose 算子的输出张量的连接
+                        for (auto &output : transposeOp->getOutputs())
+                        {
+                            if (output)
+                            {
+                                output->setSource(nullptr);
+                                for (auto &target : output->getTargets())
+                                {
+                                    target->removePredecessors(sourceA);
+                                    target->replaceInput(output, transposeOp->getInputs()[0]);
+                                }
+                            }
+                        }
+
+                        // 移除 Transpose 算子的前驱和后继操作
+                        for (auto &predecessor : transposeOp->getPredecessors())
+                        {
+                            predecessor->removeSuccessors(sourceA);
+                        }
+                        for (auto &successor : transposeOp->getSuccessors())
+                        {
+                            successor->removePredecessors(sourceA);
+                        }
+
+                        // 从 ops 列表中移除 Transpose 算子
+                        removeTensor(transposeOp->getOutputs()[0]);
+                        removeOperator(sourceA);
+                        continue;
+
+                    }
+                }
+                // 检查 inputB 是否来自 Transpose
+                Operator sourceB = inputB->getSource();
+                if (sourceB && sourceB->getOpType() == OpType(OpType::Transpose) && matmulOp->getTransB() == false)
+                {
+                    TransposeObj *transposeOp = dynamic_cast<TransposeObj*>(sourceB.get());
+                    const std::vector<int> &permutationB = transposeOp->getPermute();
+                    size_t rank = permutationB.size();
+                    if (rank >= 2 && permutationB[rank - 1] == static_cast<int>(rank - 2) && permutationB[rank - 2] == static_cast<int>(rank - 1))
+                    {
+                        matmulOp->setTransB(true);
+                        // 移除 Transpose 算子的输入张量的连接
+                        for (auto &input : transposeOp->getInputs())
+                        {
+                            if (input)
+                            {
+                                input->removeTarget(sourceB);
+                            }
+                        }
+
+                        // 移除 Transpose 算子的输出张量的连接
+                        for (auto &output : transposeOp->getOutputs())
+                        {
+                            if (output)
+                            {
+                                output->setSource(nullptr);
+                                for (auto &target : output->getTargets())
+                                {
+                                    target->removePredecessors(sourceB);
+                                    target->replaceInput(output, transposeOp->getInputs()[0]);
+                                }
+                            }
+                        }
+
+                        // 移除 Transpose 算子的前驱和后继操作
+                        for (auto &predecessor : transposeOp->getPredecessors())
+                        {
+                            predecessor->removeSuccessors(sourceB);
+                        }
+                        for (auto &successor : transposeOp->getSuccessors())
+                        {
+                            successor->removePredecessors(sourceB);
+                        }
+                        removeTensor(transposeOp->getOutputs()[0]);
+                        removeOperator(sourceB);
+                        continue;
+                    }
+                }
+            }
+            ++it;
+        }
+        topo_sort();
     }
+    
 
     Tensor GraphObj::getTensor(int fuid) const
     {
@@ -148,11 +339,19 @@ namespace infini
         // topological sorting first
         IT_ASSERT(topo_sort() == true);
 
-        // =================================== 作业 ===================================
-        // TODO：利用 allocator 给计算图分配内存
-        // HINT: 获取分配好的内存指针后，可以调用 tensor 的 setDataBlob 函数给 tensor 绑定内存
-        // =================================== 作业 ===================================
-
+        for (auto &tensor : tensors)
+        {
+            // 计算张量所需的内存大小
+            size_t size = tensor->getBytes();
+            if (size == 0) {
+                continue;
+            }
+            allocator.alloc(size);
+            void* basePtr = allocator.getPtr();
+            
+            Blob blob = make_ref<BlobObj>(runtime, basePtr);
+            tensor->setDataBlob(blob);
+        }
         allocator.info();
     }
 
